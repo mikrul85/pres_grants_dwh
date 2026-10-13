@@ -1,0 +1,21 @@
+{
+  "db": {
+    "dbname": "pres_grants_dwh",
+    "user": "postgres",
+    "password": "12345678",
+    "host": "localhost",
+    "port": 5432
+  },
+  "schemas": {
+    "stage": "grants_stg",
+    "dwh": "grants_dwh",
+    "mart": "grants_mart"
+  },
+  "paths": {
+    "raw_csv": "data/raw/data_pres_grants_114.csv",
+    "work_dir": "data",
+    "clean_csv": "data/clean_grants.csv"
+  },
+  "source": "pres_grants_foundation",
+  "chunksize": 50000
+}
