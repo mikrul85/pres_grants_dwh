@@ -4,7 +4,7 @@ Airflow DAG ETL-процесса хранилища «Проекты конку�
 Загрузка разовая, поэтому schedule=None, запуск вручную.
 
 Размещение: скопировать в $AIRFLOW_HOME/dags/, путь до проекта задать
-переменной PRES_GRANTS_ETL_DIR (по умолчанию проект ищется рядом: ../pres_grants_wh).
+переменной PRES_GRANTS_ETL_DIR (по умолчанию проект ищется рядом: ../pres_grants_dwh).
 """
 import os
 import sys
@@ -16,7 +16,7 @@ from airflow.operators.python import PythonOperator
 # путь до папки проекта с etl.py (можно задать переменной окружения)
 ETL_DIR = os.environ.get(
     'PRES_GRANTS_ETL_DIR',
-    os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'pres_grants_wh'),
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'pres_grants_dwh'),
 )
 if ETL_DIR not in sys.path:
     sys.path.insert(0, ETL_DIR)
