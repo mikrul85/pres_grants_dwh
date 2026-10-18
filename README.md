@@ -10,26 +10,6 @@
 (больше 190 000 заявок, 29 атрибутов), PostgreSQL, ETL на Python,
 оркестрация Airflow.
 
-## Отличия от предыдущей версии (старая в папке «Старые проекты»)
-
-- первичный ключ `fact_grant` - составной из всех 8 внешних ключей
-  (по методологии Кимбалла); `req_num` больше не PK факта
-- `req_num` перенесен в новое измерение `dim_application` как уникальный
-  ключ; текстовые атрибуты заявки (описание, цель, задачи, соцзначимость,
-  география, целевые группы, ссылка, название) вынесены из факта в это измерение
-- новое измерение `dim_implementation` - словарь периодов реализации
-  (уникальные пары дат старта и финиша), вместо дат в факте
-- новое мини-измерение `dim_winner_status` (2 строки: «Победа», «Не победа»)
-  вместо флага `winner` в факте
-- `dim_contest` расширен атрибутом `year`; факт стал «только метрики + FK»
-- ключ календаря переименован `date_key` -> `date_reg_key` (явная привязка
-  к дате регистрации/подачи заявки)
-- `dim_org` ведется по SCD Type 1: атрибуты берутся из самой свежей заявки
-  организации и при повторной загрузке перезаписываются (`ON CONFLICT ...
-  DO UPDATE`), а не пропускаются как раньше
-- факт грузится с `ON CONFLICT DO NOTHING` по составному PK; все FK `NOT NULL`,
-  для отсутствующих дат предусмотрена строка-заглушка (`date_reg_key = 0`)
-
 ## Архитектура и слои (по dwh_layers.drawio)
 
 | Слой | Где живет | Содержимое |
@@ -122,6 +102,94 @@ python3 etl.py load_stage load_dims load_fact build_marts
 Airflow: скопировать `dags/pres_grants_dag.py` в `$AIRFLOW_HOME/dags/`,
 путь до проекта задать `PRES_GRANTS_ETL_DIR`. Запуск DAG `pres_grants_dwh_etl`
 вручную, загрузка данных разовая (расписание не задано).
+
+## BI-дашборды (Apache Superset в Docker)
+
+Полная инструкция настройки с нуля (проверено на macOS + Docker Desktop).
+
+```bash
+# 1. Удалить старый контейнер, если он есть
+docker rm -f superset
+
+# 2. Создать контейнер с секретным ключом (генерируется автоматически).
+#    Без ключа новый образ не стартует: "Refusing to start due to insecure SECRET_KEY"
+docker run -d --name superset -p 8088:8088 -e SUPERSET_SECRET_KEY="$(openssl rand -base64 42)" apache/superset
+
+# 3. Создать администратора
+docker exec -it superset superset fab create-admin --username admin --password admin --firstname Admin --lastname User --email admin@local
+
+# 4. Инициализировать внутреннюю БД Superset (несколько минут)
+docker exec -it superset superset db upgrade
+docker exec -it superset superset init
+
+# 5. Установить драйвер PostgreSQL: в образе его нет,
+#    без него подключение к БД падает с "Database Creation Error".
+#    -u root обязателен: venv принадлежит root (иначе Permission denied),
+#    ensurepip нужен, потому что pip в venv отсутствует (No module named pip)
+docker exec -u root -it superset python -m ensurepip --upgrade
+docker exec -u root -it superset python -m pip install psycopg2-binary
+docker restart superset
+
+# 6. Проверить готовность
+curl http://localhost:8088/health   # ответ: OK
+docker exec -it superset python -c "import psycopg2; print(psycopg2.__version__)"
+```
+
+Открыть http://localhost:8088, логин `admin`, пароль `admin`.
+
+### Подключение хранилища
+
+Settings (шестеренка) -> Database Connections -> + Database -> PostgreSQL:
+
+| Поле | Значение |
+|---|---|
+| Host | `host.docker.internal` (так контейнер видит PostgreSQL на хосте) |
+| Port | `5432` |
+| Database name | `pres_grants_dwh` |
+| Username | `postgres` |
+| Password | `12345678` |
+
+Test Connection -> Connect. Альтернатива одной строкой (вкладка SQLAlchemy URI):
+
+```
+postgresql+psycopg2://postgres:12345678@host.docker.internal:5432/pres_grants_dwh
+```
+
+### Датасеты и дашборды
+
+Data -> Datasets -> + Dataset, схема `grants_mart`: `dm_grants_by_region_year`,
+`dm_grants_by_direction_year`, `dm_top_orgs`, `dm_grants_wide`.
+
+Три аналитические доски:
+1. «Статистика по регионам»: Bar Chart по `dm_grants_by_region_year`
+   (X-Axis: region, метрики SUM(applications) и SUM(wins),
+   фильтр по contest_year, сортировка по applications, Limit 15)
+2. «Конкурсные направления»: Line Chart по `dm_grants_by_direction_year`
+   (X-Axis: contest_year, серии: direction, метрика SUM(applications))
+3. «Организации-лидеры»: Table по `dm_top_orgs`
+   (org_name, applications, wins, win_rate, granted_sum; сортировка по wins)
+
+### Повседневное использование
+
+`docker stop superset` / `docker start superset` - настройки и доски сохраняются.
+ВНИМАНИЕ: при пересоздании контейнера (docker rm + run) шаги 3-5 нужно повторить.
+Постоянное решение - свой образ с драйвером внутри:
+
+```dockerfile
+FROM apache/superset
+USER root
+RUN python -m ensurepip && python -m pip install psycopg2-binary
+USER superset
+```
+
+### Решенные проблемы при настройке
+
+| Ошибка | Причина | Решение |
+|---|---|---|
+| Refusing to start due to insecure SECRET_KEY | новый образ не принимает ключ по умолчанию | запуск с -e SUPERSET_SECRET_KEY (шаг 2) |
+| Database Creation Error при подключении | нет драйвера psycopg2 в образе | шаг 5 |
+| No module named pip | venv собран без pip | python -m ensurepip --upgrade |
+| Permission denied при установке | venv принадлежит root | docker exec -u root |
 
 ## Особенности данных
 
