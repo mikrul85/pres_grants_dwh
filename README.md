@@ -88,7 +88,7 @@ pip install pandas psycopg2-binary
 # 0. Исходный CSV датасета положить в data/raw/data_pres_grants_114.csv
 #    (или задать свой путь в config.json -> paths.raw_csv)
 
-# 1. Создать БД (или поднять Postgres в Docker, см. ниже)
+# 1. Создать БД (или поднять Postgres в Docker, см. раздел ниже)
 createdb pres_grants_dwh
 
 # 2. Полный прогон
@@ -97,6 +97,66 @@ python3 etl.py
 # или по этапам
 python3 etl.py init_db extract_clean
 python3 etl.py load_stage load_dims load_fact build_marts
+```
+
+### PostgreSQL в Docker (правильный способ)
+
+Создавать контейнер сразу с увеличенной общей памятью `--shm-size` и
+именованным томом для данных. По умолчанию Docker выделяет на /dev/shm
+всего 64 МБ, и при тяжелых агрегирующих запросах (например, из Superset)
+PostgreSQL падает с ошибкой:
+
+```text
+could not resize shared memory segment "/PostgreSQL.NNN" to 8388608 bytes:
+No space left on device
+```
+
+Параметр `--shm-size` задается только при создании контейнера: у уже
+созданного его не изменить ни командой docker update, ни в Docker Desktop,
+помогает только пересоздание. Правильная команда создания:
+
+```bash
+docker run -d --name pres-grants-db \
+  --shm-size=512m \
+  -e POSTGRES_PASSWORD='***' \
+  -p 5432:5432 \
+  -v pres_grants_data:/var/lib/postgresql/data \
+  postgres:17
+```
+
+Что здесь важно:
+- `--shm-size=512m` - общая память контейнера, устраняет ошибку выше;
+- `-v pres_grants_data:...` - именованный том: данные переживают
+  пересоздание контейнера (том остается, даже если контейнер удалить);
+- кавычки вокруг значения пароля обязательны в zsh (иначе спецсимволы
+  интерпретирует оболочка);
+- пароль из переменной окружения применяется только при первой
+  инициализации пустого тома, на существующие данные не влияет.
+
+Проверка (обратите внимание на `-d pres_grants_dwh`: без нее psql
+подключится к служебной базе postgres, где ваших таблиц нет):
+
+```bash
+docker exec pres-grants-db psql -U postgres -d pres_grants_dwh \
+  -c "SELECT COUNT(*) FROM grants_dwh.fact_grant;"
+```
+
+Пересоздание контейнера с данными в томе (без потери данных):
+
+```bash
+docker stop pres-grants-db && docker rm pres-grants-db
+# повторить docker run выше с тем же томом pres_grants_data
+```
+
+Если том не создавался и данные внутри контейнера - перед удалением
+сделайте дамп и восстановите его в новый контейнер:
+
+```bash
+docker exec pres-grants-db pg_dump -U postgres pres_grants_dwh > backup.sql
+# ... пересоздать контейнер, создать БД, затем:
+docker exec -i pres-grants-db psql -U postgres -c 'CREATE DATABASE pres_grants_dwh;'
+docker exec -i pres-grants-db psql -U postgres pres_grants_dwh < backup.sql
+# или просто заново прогнать ETL: python3 etl.py
 ```
 
 Airflow: скопировать `dags/pres_grants_dag.py` в `$AIRFLOW_HOME/dags/`,
